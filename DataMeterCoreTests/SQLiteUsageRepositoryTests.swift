@@ -1,0 +1,72 @@
+import XCTest
+@testable import DataMeterCore
+
+final class SQLiteUsageRepositoryTests: XCTestCase {
+    func testRecordsDeltasAndQueriesByTimeRangeNetworkAndFilter() throws {
+        let repository = try SQLiteUsageRepository(url: temporaryDatabaseURL())
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let yesterday = now.addingTimeInterval(-90_000)
+        let sessionStart = now.addingTimeInterval(-60)
+
+        try repository.record([
+            UsageDelta(appName: "Safari", networkName: "Mobile", timestamp: yesterday, downloaded: 1_000, uploaded: 100),
+            UsageDelta(appName: "Safari", networkName: "Mobile", timestamp: now, downloaded: 2_000, uploaded: 200),
+            UsageDelta(appName: "Chrome", networkName: "Office", timestamp: now, downloaded: 3_000, uploaded: 300)
+        ])
+
+        let sessionRecords = try repository.records(timeRange: .session, networkName: nil, filterText: "", sessionStartedAt: sessionStart, now: now)
+        XCTAssertEqual(sessionRecords.map(\.appName), ["Chrome", "Safari"])
+
+        let mobileToday = try repository.records(timeRange: .today, networkName: "Mobile", filterText: "saf", sessionStartedAt: sessionStart, now: now)
+        XCTAssertEqual(mobileToday.count, 1)
+        XCTAssertEqual(mobileToday[0].appName, "Safari")
+        XCTAssertEqual(mobileToday[0].downloaded, 2_000)
+        XCTAssertEqual(mobileToday[0].uploaded, 200)
+
+        let allTimeMobile = try repository.records(timeRange: .allTime, networkName: "Mobile", filterText: "", sessionStartedAt: sessionStart, now: now)
+        XCTAssertEqual(allTimeMobile[0].downloaded, 3_000)
+        XCTAssertEqual(allTimeMobile[0].uploaded, 300)
+    }
+
+    func testNetworkSessionsCanBeStartedAndFinished() throws {
+        let repository = try SQLiteUsageRepository(url: temporaryDatabaseURL())
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let sessionID = try repository.startNetworkSession(networkName: "Mobile", startedAt: now)
+        try repository.record([
+            UsageDelta(appName: "Safari", networkName: "Mobile", networkSessionID: sessionID, timestamp: now, downloaded: 1_000, uploaded: 100)
+        ])
+        try repository.finishNetworkSession(id: sessionID, endedAt: now.addingTimeInterval(60))
+
+        let openSessionID = try repository.startNetworkSession(networkName: "Office", startedAt: now)
+        try repository.finishOpenNetworkSessions(endedAt: now.addingTimeInterval(120))
+        XCTAssertGreaterThan(openSessionID, sessionID)
+
+        let records = try repository.records(timeRange: .allTime, networkName: "Mobile", filterText: "", sessionStartedAt: now, now: now)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].total, 1_100)
+    }
+
+    func testResetDeletesOnlyMatchingScope() throws {
+        let repository = try SQLiteUsageRepository(url: temporaryDatabaseURL())
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let sessionStart = now.addingTimeInterval(-60)
+
+        try repository.record([
+            UsageDelta(appName: "Safari", networkName: "Mobile", timestamp: now, downloaded: 1_000, uploaded: 0),
+            UsageDelta(appName: "Chrome", networkName: "Office", timestamp: now, downloaded: 2_000, uploaded: 0)
+        ])
+
+        try repository.reset(networkName: "Mobile", since: nil)
+
+        let records = try repository.records(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: sessionStart, now: now)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].appName, "Chrome")
+    }
+
+    private func temporaryDatabaseURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("sqlite")
+    }
+}

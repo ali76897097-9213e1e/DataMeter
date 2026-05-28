@@ -1,0 +1,62 @@
+name: DataMeter
+options:
+  bundleIdPrefix: com.emmanuelchucks
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    MACOSX_DEPLOYMENT_TARGET: 14.0
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift.git
+    from: 7.10.0
+targets:
+  DataMeter:
+    type: application
+    platform: macOS
+    sources:
+      - DataMeterApp
+    dependencies:
+      - target: DataMeterCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emmanuelchucks.DataMeter
+        INFOPLIST_FILE: DataMeterApp/App/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+    postBuildScripts:
+      - name: Install complete AppIcon.icns
+        script: |
+          set -euo pipefail
+          if [ -f "${SRCROOT}/scripts/assets/AppIcon.icns" ]; then
+            cp "${SRCROOT}/scripts/assets/AppIcon.icns" "${TARGET_BUILD_DIR}/${WRAPPER_NAME}/Contents/Resources/AppIcon.icns"
+          fi
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Resources/AppIcon.icns
+    scheme:
+      testTargets:
+        - DataMeterCoreTests
+  DataMeterCore:
+    type: framework
+    platform: macOS
+    sources:
+      - DataMeterCore
+    dependencies:
+      - package: GRDB
+        product: GRDB
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emmanuelchucks.DataMeterCore
+        GENERATE_INFOPLIST_FILE: YES
+  DataMeterCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - DataMeterCoreTests
+    dependencies:
+      - target: DataMeterCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emmanuelchucks.DataMeterCoreTests
+        GENERATE_INFOPLIST_FILE: YES

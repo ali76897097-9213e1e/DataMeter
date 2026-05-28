@@ -1,0 +1,181 @@
+import Foundation
+import GRDB
+
+public final class SQLiteUsageRepository: UsageHistoryRepository, @unchecked Sendable {
+    private let dbQueue: DatabaseQueue
+
+    public init(url: URL? = nil) throws {
+        let databaseURL: URL
+        if let url {
+            databaseURL = url
+        } else {
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let directory = base.appendingPathComponent("DataMeter", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            databaseURL = directory.appendingPathComponent("usage.sqlite")
+        }
+
+        dbQueue = try DatabaseQueue(path: databaseURL.path)
+        try Self.migrator.migrate(dbQueue)
+    }
+
+    public func startNetworkSession(networkName: String, startedAt: Date) throws -> Int64 {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "INSERT INTO network_sessions (network_name, started_at, ended_at) VALUES (?, ?, NULL)",
+                arguments: [networkName, startedAt.timeIntervalSince1970]
+            )
+            return db.lastInsertedRowID
+        }
+    }
+
+    public func finishNetworkSession(id: Int64, endedAt: Date) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE network_sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
+                arguments: [endedAt.timeIntervalSince1970, id]
+            )
+        }
+    }
+
+    public func finishOpenNetworkSessions(endedAt: Date) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE network_sessions SET ended_at = ? WHERE ended_at IS NULL",
+                arguments: [endedAt.timeIntervalSince1970]
+            )
+        }
+    }
+
+    public func record(_ deltas: [UsageDelta]) throws {
+        guard !deltas.isEmpty else { return }
+        try dbQueue.write { db in
+            for delta in deltas {
+                try db.execute(
+                    sql: """
+                    INSERT INTO usage_deltas (app_name, network_name, network_session_id, timestamp, downloaded_bytes, uploaded_bytes)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    arguments: [delta.appName, delta.networkName, delta.networkSessionID, delta.timestamp.timeIntervalSince1970, Int64(delta.downloaded), Int64(delta.uploaded)]
+                )
+            }
+        }
+    }
+
+    public func records(
+        timeRange: UsageTimeRange,
+        networkName: String?,
+        filterText: String,
+        sessionStartedAt: Date,
+        now: Date = Date()
+    ) throws -> [UsageRecord] {
+        let startDate = timeRange.startDate(sessionStartedAt: sessionStartedAt, now: now)
+        let trimmedFilter = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var conditions: [String] = []
+        var arguments = StatementArguments()
+
+        if let startDate {
+            conditions.append("timestamp >= ?")
+            arguments += [startDate.timeIntervalSince1970]
+        }
+
+        if let networkName, !networkName.isEmpty {
+            conditions.append("network_name = ?")
+            arguments += [networkName]
+        }
+
+        if !trimmedFilter.isEmpty {
+            conditions.append("app_name LIKE ? ESCAPE '\\'")
+            arguments += ["%\(escapeLike(trimmedFilter))%"]
+        }
+
+        let whereClause = conditions.isEmpty ? "" : "WHERE \(conditions.joined(separator: " AND "))"
+        let sql = """
+            SELECT app_name, SUM(downloaded_bytes) AS downloaded, SUM(uploaded_bytes) AS uploaded
+            FROM usage_deltas
+            \(whereClause)
+            GROUP BY app_name
+            HAVING downloaded > 0 OR uploaded > 0
+            ORDER BY downloaded + uploaded DESC, app_name ASC
+            """
+
+        return try dbQueue.read { db in
+            try Row.fetchAll(db, sql: sql, arguments: arguments).map { row in
+                let appName: String = row["app_name"]
+                let downloaded: Int64 = row["downloaded"]
+                let uploaded: Int64 = row["uploaded"]
+                return UsageRecord(
+                    appName: appName,
+                    downloaded: UInt64(downloaded),
+                    uploaded: UInt64(uploaded)
+                )
+            }
+        }
+    }
+
+    public func networks() throws -> [String] {
+        try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT DISTINCT network_name FROM usage_deltas ORDER BY network_name ASC")
+        }
+    }
+
+    public func reset(networkName: String?, since startDate: Date?) throws {
+        var conditions: [String] = []
+        var arguments = StatementArguments()
+
+        if let networkName, !networkName.isEmpty {
+            conditions.append("network_name = ?")
+            arguments += [networkName]
+        }
+
+        if let startDate {
+            conditions.append("timestamp >= ?")
+            arguments += [startDate.timeIntervalSince1970]
+        }
+
+        let whereClause = conditions.isEmpty ? "" : "WHERE \(conditions.joined(separator: " AND "))"
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM usage_deltas \(whereClause)", arguments: arguments)
+        }
+    }
+
+    private static var migrator: DatabaseMigrator {
+        var migrator = DatabaseMigrator()
+        migrator.registerMigration("createUsageDeltas") { db in
+            try db.create(table: "usage_deltas") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("app_name", .text).notNull()
+                table.column("network_name", .text).notNull()
+                table.column("timestamp", .double).notNull()
+                table.column("downloaded_bytes", .integer).notNull()
+                table.column("uploaded_bytes", .integer).notNull()
+            }
+            try db.create(index: "idx_usage_deltas_timestamp", on: "usage_deltas", columns: ["timestamp"])
+            try db.create(index: "idx_usage_deltas_network", on: "usage_deltas", columns: ["network_name"])
+            try db.create(index: "idx_usage_deltas_app", on: "usage_deltas", columns: ["app_name"])
+        }
+        migrator.registerMigration("createNetworkSessions") { db in
+            try db.create(table: "network_sessions") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("network_name", .text).notNull()
+                table.column("started_at", .double).notNull()
+                table.column("ended_at", .double)
+            }
+            try db.alter(table: "usage_deltas") { table in
+                table.add(column: "network_session_id", .integer)
+            }
+            try db.create(index: "idx_network_sessions_network", on: "network_sessions", columns: ["network_name"])
+            try db.create(index: "idx_network_sessions_started", on: "network_sessions", columns: ["started_at"])
+            try db.create(index: "idx_usage_deltas_network_session", on: "usage_deltas", columns: ["network_session_id"])
+        }
+        return migrator
+    }
+}
+
+private func escapeLike(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "%", with: "\\%")
+        .replacingOccurrences(of: "_", with: "\\_")
+}
