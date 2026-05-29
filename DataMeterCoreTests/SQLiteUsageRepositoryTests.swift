@@ -47,6 +47,31 @@ final class SQLiteUsageRepositoryTests: XCTestCase {
         XCTAssertEqual(records[0].total, 1_100)
     }
 
+    func testMaintenanceRollsOlderDeltasIntoDailyRows() throws {
+        let repository = try SQLiteUsageRepository(url: temporaryDatabaseURL())
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let old = now.addingTimeInterval(-40 * 24 * 60 * 60)
+        let sessionStart = old.addingTimeInterval(-60)
+
+        try repository.record([
+            UsageDelta(appName: "Safari", networkName: "Office", timestamp: old, downloaded: 1_000, uploaded: 100),
+            UsageDelta(appName: "Safari", networkName: "Office", timestamp: old.addingTimeInterval(60), downloaded: 2_000, uploaded: 200),
+            UsageDelta(appName: "Chrome", networkName: "Mobile", timestamp: now, downloaded: 3_000, uploaded: 300)
+        ])
+
+        try repository.performMaintenance(now: now)
+
+        let allRecords = try repository.records(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: sessionStart, now: now)
+        XCTAssertEqual(allRecords.first { $0.appName == "Safari" }?.downloaded, 3_000)
+        XCTAssertEqual(allRecords.first { $0.appName == "Safari" }?.uploaded, 300)
+        XCTAssertEqual(allRecords.first { $0.appName == "Chrome" }?.downloaded, 3_000)
+
+        let officeRecords = try repository.records(timeRange: .allTime, networkName: "Office", filterText: "", sessionStartedAt: sessionStart, now: now)
+        XCTAssertEqual(officeRecords.count, 1)
+        XCTAssertEqual(officeRecords[0].appName, "Safari")
+        XCTAssertEqual(try repository.networks(), ["Mobile", "Office"])
+    }
+
     func testResetDeletesOnlyMatchingScope() throws {
         let repository = try SQLiteUsageRepository(url: temporaryDatabaseURL())
         let now = Date(timeIntervalSince1970: 1_800_000_000)

@@ -19,80 +19,101 @@ final class UsageViewModel: ObservableObject {
     var totalUsage: UInt64 { totalDownloaded + totalUploaded }
 
     private let allNetworks = "All Networks"
-    private let sampler: UsageSampler
-    private let repository: UsageHistoryRepository
-    private let networkProvider: NetworkIdentityProviding
-    private let appIdentityResolver = AppIdentityResolver()
-    private var accumulator = UsageAccumulator()
-    private var timer: Timer?
+    private var engine: UsageTrackingEngine?
+    private var samplingTask: Task<Void, Never>?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var resumeAfterWake = false
-    private var currentNetworkSessionID: Int64?
-    private var currentNetworkSessionName: String?
     private let sessionStartedAt = Date()
+    private let activeSampleInterval: Duration = .seconds(2)
+    private let backgroundSampleInterval: Duration = .seconds(8)
+    private var visibleSurfaceCount = 0
 
     init(
         sampler: UsageSampler = NetTopSampler(),
         repository: UsageHistoryRepository? = nil,
         networkProvider: NetworkIdentityProviding = NetworkIdentityProvider()
     ) {
-        self.sampler = sampler
         self.trackingStartedAt = sessionStartedAt
-        self.repository = repository ?? (try! SQLiteUsageRepository())
-        self.networkProvider = networkProvider
-        try? self.repository.finishOpenNetworkSessions(endedAt: Date())
-        refreshNetwork()
-        recomputeNetworks()
-        recomputeRecords()
-        observeSleepWake()
-        start()
+        do {
+            let repository = try repository ?? SQLiteUsageRepository()
+            self.engine = UsageTrackingEngine(
+                sampler: sampler,
+                repository: repository,
+                networkProvider: networkProvider,
+                processResolver: AppProcessSnapshotResolver()
+            )
+            Task {
+                try? await engine?.finishOpenSessions()
+                await refreshState()
+            }
+            observeSleepWake()
+            start()
+        } catch {
+            self.engine = nil
+            isRunning = false
+            status = "Storage unavailable: \(error.localizedDescription)"
+        }
     }
 
-
     func start() {
+        guard samplingTask == nil else {
+            isRunning = true
+            status = "Tracking"
+            return
+        }
+
         isRunning = true
         status = "Tracking"
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.sample() }
+        samplingTask = Task { [weak self] in
+            await self?.runSamplingLoop()
         }
-        Task { await sample() }
     }
 
     func pause() {
         isRunning = false
         status = "Paused"
-        timer?.invalidate()
-        timer = nil
+        samplingTask?.cancel()
+        samplingTask = nil
+        Task {
+            try? await engine?.pause()
+        }
     }
 
     func resetVisibleTotals() {
-        do {
-            try repository.reset(networkName: selectedNetworkName, since: selectedTimeRange.startDate(sessionStartedAt: sessionStartedAt))
-            accumulator.reset(network: selectedNetworkName)
-            recomputeNetworks()
-            recomputeRecords()
-        } catch {
-            status = "Reset failed: \(error.localizedDescription)"
+        Task {
+            do {
+                guard let engine else { return }
+                let state = try await engine.reset(query: makeQuery())
+                apply(state: state)
+                status = isRunning ? "Tracking" : "Paused"
+            } catch {
+                status = "Reset failed: \(error.localizedDescription)"
+            }
         }
     }
 
     func filtersChanged() {
-        recomputeRecords()
+        Task { await refreshState() }
+    }
+
+    func surfaceAppeared() {
+        visibleSurfaceCount += 1
+    }
+
+    func surfaceDisappeared() {
+        visibleSurfaceCount = max(0, visibleSurfaceCount - 1)
     }
 
     func sample() async {
         guard isRunning else { return }
-        refreshNetwork()
         do {
-            try ensureNetworkSession()
-            let snapshots = appIdentityResolver.resolve(try await sampler.sample())
-            let deltas = accumulator.apply(snapshots: snapshots, network: currentNetwork)
-                .map { $0.withNetworkSessionID(currentNetworkSessionID) }
-            try repository.record(deltas)
-            recomputeNetworks()
-            recomputeRecords()
-            status = "Tracking • \(snapshots.count) processes"
+            guard let engine else { return }
+            let state = try await engine.sample(query: makeQuery())
+            guard isRunning, !Task.isCancelled else { return }
+            apply(state: state)
+            status = "Tracking • \(state.processCount) processes"
+        } catch is CancellationError {
+            status = "Paused"
         } catch {
             status = "Tracking failed: \(error.localizedDescription)"
         }
@@ -102,17 +123,61 @@ final class UsageViewModel: ObservableObject {
         selectedNetwork == allNetworks ? nil : selectedNetwork
     }
 
-    private func refreshNetwork() {
-        currentNetwork = networkProvider.currentNetworkName()
+    private func runSamplingLoop() async {
+        while !Task.isCancelled {
+            await sample()
+            do {
+                try await Task.sleep(for: nextSampleInterval)
+            } catch {
+                break
+            }
+        }
     }
 
-    private func ensureNetworkSession() throws {
-        guard currentNetworkSessionID == nil || currentNetworkSessionName != currentNetwork else { return }
-        if let currentNetworkSessionID {
-            try repository.finishNetworkSession(id: currentNetworkSessionID, endedAt: Date())
+    private var nextSampleInterval: Duration {
+        visibleSurfaceCount > 0 ? activeSampleInterval : backgroundSampleInterval
+    }
+
+    private func refreshState() async {
+        do {
+            guard let engine else { return }
+            let state = try await engine.state(query: makeQuery())
+            apply(state: state)
+        } catch {
+            status = "Query failed: \(error.localizedDescription)"
         }
-        currentNetworkSessionID = try repository.startNetworkSession(networkName: currentNetwork, startedAt: Date())
-        currentNetworkSessionName = currentNetwork
+    }
+
+    private func makeQuery(now: Date = Date()) -> UsageQuery {
+        UsageQuery(
+            timeRange: selectedTimeRange,
+            networkName: selectedNetworkName,
+            filterText: filterText,
+            sessionStartedAt: sessionStartedAt,
+            now: now
+        )
+    }
+
+    private func apply(state: UsageTrackingState) {
+        if currentNetwork != state.currentNetwork {
+            currentNetwork = state.currentNetwork
+        }
+
+        let nextNetworks = [allNetworks] + state.networks
+        if networks != nextNetworks {
+            networks = nextNetworks
+        }
+        if !networks.contains(selectedNetwork) { selectedNetwork = allNetworks }
+
+        if records != state.records {
+            records = state.records
+        }
+        if totalDownloaded != state.totalDownloaded {
+            totalDownloaded = state.totalDownloaded
+        }
+        if totalUploaded != state.totalUploaded {
+            totalUploaded = state.totalUploaded
+        }
     }
 
     private func observeSleepWake() {
@@ -121,21 +186,17 @@ final class UsageViewModel: ObservableObject {
             guard let self else { return }
             Task { @MainActor in
                 self.resumeAfterWake = self.isRunning
-                if let currentNetworkSessionID = self.currentNetworkSessionID {
-                    try? self.repository.finishNetworkSession(id: currentNetworkSessionID, endedAt: Date())
-                }
-                self.currentNetworkSessionID = nil
-                self.currentNetworkSessionName = nil
-                self.pause()
-                self.accumulator.reset()
+                self.samplingTask?.cancel()
+                self.samplingTask = nil
+                self.isRunning = false
+                try? await self.engine?.prepareForSleep()
                 self.status = "Paused for sleep"
             }
         })
         workspaceObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
-                self.accumulator.reset()
-                self.refreshNetwork()
+                await self.engine?.resetAccumulator()
                 if self.resumeAfterWake {
                     self.start()
                 } else {
@@ -145,36 +206,9 @@ final class UsageViewModel: ObservableObject {
         })
         workspaceObservers.append(NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in
-                guard let currentNetworkSessionID = self.currentNetworkSessionID else { return }
-                try? self.repository.finishNetworkSession(id: currentNetworkSessionID, endedAt: Date())
+            Task {
+                try? await self.engine?.pause()
             }
         })
     }
-
-    private func recomputeNetworks() {
-        do {
-            networks = [allNetworks] + (try repository.networks())
-            if !networks.contains(selectedNetwork) { selectedNetwork = allNetworks }
-        } catch {
-            status = "Network list failed: \(error.localizedDescription)"
-        }
-    }
-
-    private func recomputeRecords() {
-        do {
-            records = try repository.records(
-                timeRange: selectedTimeRange,
-                networkName: selectedNetworkName,
-                filterText: filterText,
-                sessionStartedAt: sessionStartedAt,
-                now: Date()
-            )
-            totalDownloaded = records.reduce(0) { $0 + $1.downloaded }
-            totalUploaded = records.reduce(0) { $0 + $1.uploaded }
-        } catch {
-            status = "Query failed: \(error.localizedDescription)"
-        }
-    }
-
 }

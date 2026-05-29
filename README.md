@@ -13,7 +13,7 @@ DataMeter is designed for everyday network data-usage awareness: keep it running
 - Download/upload/total summaries.
 - App icons and nicer app names when macOS can resolve the process to an app bundle.
 - Local SQLite history at `~/Library/Application Support/DataMeter/usage.sqlite`.
-- Launch at Login enabled automatically so totals keep accumulating.
+- Optional Launch at Login so totals keep accumulating after you opt in.
 - Menu bar companion view.
 
 ## Project structure
@@ -43,7 +43,7 @@ artifacts/
 scripts/install-local.sh
 ```
 
-This builds Release, installs `DataMeter.app` into `/Applications`, launches it, and lets the app register itself for Launch at Login.
+This builds Release, installs `DataMeter.app` into `/Applications`, and launches it. Enable Launch at Login in Settings if you want DataMeter to start automatically.
 
 ## Develop
 
@@ -75,6 +75,10 @@ scripts/smoke-macos.sh
 ```
 
 This builds the app, opens it, verifies the accessibility snapshot, captures a screenshot, and writes ignored artifacts to `artifacts/smoke/`.
+
+## Privacy
+
+DataMeter stores usage history locally at `~/Library/Application Support/DataMeter/usage.sqlite`. It does not include analytics, telemetry, ads, cloud sync, or crash-report uploading. See [PRIVACY.md](PRIVACY.md).
 
 ## Limitations
 

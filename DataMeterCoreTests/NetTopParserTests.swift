@@ -20,6 +20,22 @@ time,,interface,state,bytes_in,bytes_out,rx_dupe
         XCTAssertEqual(snapshots[0].uploaded, 250)
     }
 
+    func testParsesQuotedProcessNamesAndReorderedByteColumns() {
+        let output = """
+time,process,interface,bytes_out,state,bytes_in
+02:20:48.1,"Example, App.456",,25,,100
+"""
+
+        let snapshots = NetTopParser.parse(output)
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshots[0].key, "Example, App.456")
+        XCTAssertEqual(snapshots[0].processName, "Example, App")
+        XCTAssertEqual(snapshots[0].pid, 456)
+        XCTAssertEqual(snapshots[0].downloaded, 100)
+        XCTAssertEqual(snapshots[0].uploaded, 25)
+    }
+
     func testParsesProcessIdentity() {
         let identity = NetTopParser.parseProcessIdentity("Google Chrome Helper.123")
         XCTAssertEqual(identity.name, "Google Chrome Helper")

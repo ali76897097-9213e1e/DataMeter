@@ -35,17 +35,11 @@ struct SettingsView: View {
         .padding()
         .frame(width: 440)
         .onAppear {
-            ensureLaunchAtLoginEnabled()
             refreshLaunchAtLogin()
         }
         .onChange(of: appearsActive) { _, isActive in
             if isActive { refreshLaunchAtLogin() }
         }
-    }
-
-    private func ensureLaunchAtLoginEnabled() {
-        guard SMAppService.mainApp.status != .enabled else { return }
-        try? SMAppService.mainApp.register()
     }
 
     private func refreshLaunchAtLogin() {

@@ -8,4 +8,5 @@ public protocol UsageHistoryRepository: Sendable {
     func records(timeRange: UsageTimeRange, networkName: String?, filterText: String, sessionStartedAt: Date, now: Date) throws -> [UsageRecord]
     func networks() throws -> [String]
     func reset(networkName: String?, since startDate: Date?) throws
+    func performMaintenance(now: Date) throws
 }

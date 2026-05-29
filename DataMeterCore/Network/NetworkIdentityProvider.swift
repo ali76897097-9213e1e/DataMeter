@@ -1,7 +1,7 @@
 import Foundation
 
 public protocol NetworkIdentityProviding: Sendable {
-    func currentNetworkName() -> String
+    func currentNetworkName() async -> String
 }
 
 public struct NetworkIdentityProvider: NetworkIdentityProviding {
@@ -11,8 +11,10 @@ public struct NetworkIdentityProvider: NetworkIdentityProviding {
         self.shell = shell
     }
 
-    public func currentNetworkName() -> String {
-        currentWiFiSSID() ?? defaultInterfaceName() ?? "Unknown Network"
+    public func currentNetworkName() async -> String {
+        await Task.detached {
+            currentWiFiSSID() ?? defaultInterfaceName() ?? "Unknown Network"
+        }.value
     }
 
     private func defaultInterfaceName() -> String? {

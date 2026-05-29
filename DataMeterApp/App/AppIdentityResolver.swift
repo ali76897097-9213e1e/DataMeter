@@ -2,24 +2,49 @@ import AppKit
 import DataMeterCore
 
 @MainActor
-struct AppIdentityResolver {
+final class AppIdentityResolver {
+    static let shared = AppIdentityResolver()
+
+    private var appIdentityByProcessKey: [String: (identifier: String, name: String)] = [:]
+    private var unresolvedProcessKeys: Set<String> = []
+
+    private init() {}
+
     func resolve(_ snapshots: [ProcessSnapshot]) -> [ProcessSnapshot] {
         snapshots.map(resolve)
     }
 
     func resolve(_ snapshot: ProcessSnapshot) -> ProcessSnapshot {
-        if let appName = appNameForRunningApplication(pid: snapshot.pid) {
-            return snapshot.withAppName(appName)
+        if let cachedIdentity = appIdentityByProcessKey[snapshot.key] {
+            return snapshot.withAppIdentity(identifier: cachedIdentity.identifier, name: cachedIdentity.name)
         }
 
-        if let groupedName = groupedFallbackName(for: snapshot.processName) {
-            return snapshot.withAppName(groupedName)
+        if unresolvedProcessKeys.contains(snapshot.key) {
+            return fallbackResolved(snapshot)
         }
 
-        return snapshot
+        if let appIdentity = appIdentityForRunningApplication(pid: snapshot.pid) {
+            appIdentityByProcessKey[snapshot.key] = appIdentity
+            return snapshot.withAppIdentity(identifier: appIdentity.identifier, name: appIdentity.name)
+        }
+
+        let resolved = fallbackResolved(snapshot)
+        if resolved.appName == snapshot.appName {
+            unresolvedProcessKeys.insert(snapshot.key)
+        } else {
+            appIdentityByProcessKey[snapshot.key] = (resolved.appIdentifier, resolved.appName)
+        }
+        return resolved
     }
 
-    private func appNameForRunningApplication(pid: Int32?) -> String? {
+    private func fallbackResolved(_ snapshot: ProcessSnapshot) -> ProcessSnapshot {
+        if let groupedName = groupedFallbackName(for: snapshot.processName) {
+            return snapshot.withAppIdentity(identifier: "group:\(groupedName)", name: groupedName)
+        }
+        return snapshot.withAppIdentity(identifier: "process:\(snapshot.processName)", name: snapshot.appName)
+    }
+
+    private func appIdentityForRunningApplication(pid: Int32?) -> (identifier: String, name: String)? {
         guard let pid, let app = NSRunningApplication(processIdentifier: pid) else { return nil }
         let appName: String?
         if let localizedName = app.localizedName, !localizedName.isEmpty {
@@ -33,9 +58,12 @@ struct AppIdentityResolver {
         if let appName {
             let displayName = groupedFallbackName(for: appName) ?? appName
             AppIconCache.shared.setIcon(for: displayName, bundleURL: app.bundleURL)
-            return displayName
+            let identifier = app.bundleIdentifier
+                ?? app.bundleURL?.path
+                ?? "process:\(displayName)"
+            return (identifier, displayName)
         }
-        return appName
+        return nil
     }
 
     private func groupedFallbackName(for processName: String) -> String? {

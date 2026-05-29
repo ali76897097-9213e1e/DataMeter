@@ -48,5 +48,7 @@ struct MenuBarRootView: View {
             }
         }
         .padding(12)
+        .onAppear { viewModel.surfaceAppeared() }
+        .onDisappear { viewModel.surfaceDisappeared() }
     }
 }

@@ -1,6 +1,7 @@
 import Foundation
 
 public struct UsageDelta: Codable, Hashable, Sendable {
+    public let appIdentifier: String
     public let appName: String
     public let networkName: String
     public let networkSessionID: Int64?
@@ -10,7 +11,8 @@ public struct UsageDelta: Codable, Hashable, Sendable {
 
     public var total: UInt64 { downloaded + uploaded }
 
-    public init(appName: String, networkName: String, networkSessionID: Int64? = nil, timestamp: Date, downloaded: UInt64, uploaded: UInt64) {
+    public init(appIdentifier: String? = nil, appName: String, networkName: String, networkSessionID: Int64? = nil, timestamp: Date, downloaded: UInt64, uploaded: UInt64) {
+        self.appIdentifier = appIdentifier ?? appName
         self.appName = appName
         self.networkName = networkName
         self.networkSessionID = networkSessionID
@@ -20,6 +22,6 @@ public struct UsageDelta: Codable, Hashable, Sendable {
     }
 
     public func withNetworkSessionID(_ networkSessionID: Int64?) -> UsageDelta {
-        UsageDelta(appName: appName, networkName: networkName, networkSessionID: networkSessionID, timestamp: timestamp, downloaded: downloaded, uploaded: uploaded)
+        UsageDelta(appIdentifier: appIdentifier, appName: appName, networkName: networkName, networkSessionID: networkSessionID, timestamp: timestamp, downloaded: downloaded, uploaded: uploaded)
     }
 }

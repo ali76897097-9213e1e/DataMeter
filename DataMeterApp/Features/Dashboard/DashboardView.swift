@@ -18,6 +18,8 @@ struct DashboardView: View {
             }
         }
         .padding(20)
+        .onAppear { viewModel.surfaceAppeared() }
+        .onDisappear { viewModel.surfaceDisappeared() }
     }
 
     private var header: some View {

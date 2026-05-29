@@ -1,14 +1,9 @@
-import ServiceManagement
 import SwiftUI
 
 @main
 struct DataMeterApp: App {
     @StateObject private var viewModel = UsageViewModel()
     @StateObject private var appearanceSettings = AppAppearanceSettings.shared
-
-    init() {
-        try? SMAppService.mainApp.register()
-    }
 
     var body: some Scene {
         WindowGroup {
