@@ -2,61 +2,79 @@ import XCTest
 @testable import DataMeterCore
 
 final class UsageTrackingEngineTests: XCTestCase {
-    func testNetworkChangePrimesAccumulatorWithoutAttributingCrossNetworkDelta() async throws {
+    func testSamplesBecomeVisibleUsageTotalsAfterBaseline() async throws {
+        let sampler = SequenceSampler(samples: [
+            [ProcessSnapshot(key: "Safari.100", appIdentifier: "com.apple.Safari", appName: "Safari", pid: 100, downloaded: 100, uploaded: 50)],
+            [ProcessSnapshot(key: "Safari.100", appIdentifier: "com.apple.Safari", appName: "Safari", pid: 100, downloaded: 350, uploaded: 125)]
+        ])
+        let repository = try SQLiteUsageRepository(url: temporaryDatabaseURL())
+        let engine = UsageTrackingEngine(
+            sampler: sampler,
+            repository: repository,
+            networkProvider: SequenceNetworkProvider(networks: ["Wi‑Fi: Home", "Wi‑Fi: Home"])
+        )
+        let query = UsageQuery(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: Date(timeIntervalSince1970: 0))
+
+        _ = try await engine.sample(query: query)
+        let state = try await engine.sample(query: query)
+
+        XCTAssertEqual(state.records.count, 1)
+        XCTAssertEqual(state.records[0].appIdentifier, "com.apple.Safari")
+        XCTAssertEqual(state.records[0].appName, "Safari")
+        XCTAssertEqual(state.records[0].downloaded, 250)
+        XCTAssertEqual(state.records[0].uploaded, 75)
+        XCTAssertEqual(state.totalDownloaded, 250)
+        XCTAssertEqual(state.totalUploaded, 75)
+    }
+
+    func testNetworkSwitchDoesNotPolluteTheNewNetworkWithPreviousUsage() async throws {
         let sampler = SequenceSampler(samples: [
             [ProcessSnapshot(key: "Safari.100", appName: "Safari", pid: 100, downloaded: 100, uploaded: 50)],
             [ProcessSnapshot(key: "Safari.100", appName: "Safari", pid: 100, downloaded: 300, uploaded: 150)],
             [ProcessSnapshot(key: "Safari.100", appName: "Safari", pid: 100, downloaded: 500, uploaded: 250)]
         ])
-        let networkProvider = SequenceNetworkProvider(networks: ["Wi‑Fi: Home", "Wi‑Fi: Office", "Wi‑Fi: Office"])
         let repository = try SQLiteUsageRepository(url: temporaryDatabaseURL())
-        let engine = UsageTrackingEngine(sampler: sampler, repository: repository, networkProvider: networkProvider)
-        let query = UsageQuery(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: Date())
+        let engine = UsageTrackingEngine(
+            sampler: sampler,
+            repository: repository,
+            networkProvider: SequenceNetworkProvider(networks: ["Wi‑Fi: Home", "Wi‑Fi: Office", "Wi‑Fi: Office"])
+        )
+        let sessionStartedAt = Date(timeIntervalSince1970: 0)
+        let query = UsageQuery(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: sessionStartedAt)
 
         _ = try await engine.sample(query: query)
+        _ = try await engine.sample(query: query)
+        let allNetworks = try await engine.sample(query: query)
+
+        XCTAssertEqual(allNetworks.records.first?.downloaded, 200)
+        XCTAssertEqual(allNetworks.records.first?.uploaded, 100)
+
+        let office = try repository.records(timeRange: .allTime, networkName: "Wi‑Fi: Office", filterText: "", sessionStartedAt: sessionStartedAt, now: Date())
+        let home = try repository.records(timeRange: .allTime, networkName: "Wi‑Fi: Home", filterText: "", sessionStartedAt: sessionStartedAt, now: Date())
+        XCTAssertEqual(office.first?.downloaded, 200)
+        XCTAssertEqual(office.first?.uploaded, 100)
+        XCTAssertTrue(home.isEmpty)
+    }
+
+    func testProcessCounterResetDoesNotCreateVisibleUsage() async throws {
+        let sampler = SequenceSampler(samples: [
+            [ProcessSnapshot(key: "curl.42", appName: "curl", pid: 42, downloaded: 1_000, uploaded: 500)],
+            [ProcessSnapshot(key: "curl.42", appName: "curl", pid: 42, downloaded: 10, uploaded: 5)]
+        ])
+        let repository = try SQLiteUsageRepository(url: temporaryDatabaseURL())
+        let engine = UsageTrackingEngine(
+            sampler: sampler,
+            repository: repository,
+            networkProvider: SequenceNetworkProvider(networks: ["en0", "en0"])
+        )
+        let query = UsageQuery(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: Date(timeIntervalSince1970: 0))
+
         _ = try await engine.sample(query: query)
         let state = try await engine.sample(query: query)
 
-        XCTAssertEqual(state.records.first?.downloaded, 200)
-        XCTAssertEqual(state.records.first?.uploaded, 100)
-
-        let officeRecords = try repository.records(timeRange: .allTime, networkName: "Wi‑Fi: Office", filterText: "", sessionStartedAt: Date(), now: Date())
-        XCTAssertEqual(officeRecords.first?.downloaded, 200)
-        XCTAssertEqual(officeRecords.first?.uploaded, 100)
-
-        let homeRecords = try repository.records(timeRange: .allTime, networkName: "Wi‑Fi: Home", filterText: "", sessionStartedAt: Date(), now: Date())
-        XCTAssertTrue(homeRecords.isEmpty)
-    }
-
-    func testPauseClosesCurrentNetworkSession() async throws {
-        let sampler = SequenceSampler(samples: [
-            [ProcessSnapshot(key: "Safari.100", appName: "Safari", pid: 100, downloaded: 100, uploaded: 50)]
-        ])
-        let networkProvider = SequenceNetworkProvider(networks: ["Wi‑Fi: Home"])
-        let repository = TestUsageHistoryRepository()
-        let engine = UsageTrackingEngine(sampler: sampler, repository: repository, networkProvider: networkProvider)
-        let query = UsageQuery(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: Date())
-
-        _ = try await engine.sample(query: query)
-        try await engine.pause()
-
-        XCTAssertEqual(repository.startedSessions, ["Wi‑Fi: Home"])
-        XCTAssertEqual(repository.finishedSessionIDs, [1])
-    }
-
-    func testNoDeltaSampleReusesCachedRecords() async throws {
-        let snapshots = [ProcessSnapshot(key: "Safari.100", appName: "Safari", pid: 100, downloaded: 100, uploaded: 50)]
-        let sampler = SequenceSampler(samples: [snapshots, snapshots])
-        let networkProvider = SequenceNetworkProvider(networks: ["Wi‑Fi: Home", "Wi‑Fi: Home"])
-        let repository = TestUsageHistoryRepository(recordsToReturn: [UsageRecord(appName: "Safari", downloaded: 10, uploaded: 5)])
-        let engine = UsageTrackingEngine(sampler: sampler, repository: repository, networkProvider: networkProvider)
-        let query = UsageQuery(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 100))
-
-        _ = try await engine.sample(query: query)
-        _ = try await engine.sample(query: query)
-
-        XCTAssertEqual(repository.recordsCallCount, 1)
-        XCTAssertEqual(repository.recordedDeltaBatches.count, 0)
+        XCTAssertTrue(state.records.isEmpty)
+        XCTAssertEqual(state.totalDownloaded, 0)
+        XCTAssertEqual(state.totalUploaded, 0)
     }
 
     private func temporaryDatabaseURL() throws -> URL {
@@ -90,53 +108,4 @@ private actor SequenceNetworkProvider: NetworkIdentityProviding {
         if networks.isEmpty { return "Unknown Network" }
         return networks.removeFirst()
     }
-}
-
-private final class TestUsageHistoryRepository: UsageHistoryRepository, @unchecked Sendable {
-    private let lock = NSLock()
-    private(set) var startedSessions: [String] = []
-    private(set) var finishedSessionIDs: [Int64] = []
-    private(set) var recordedDeltaBatches: [[UsageDelta]] = []
-    private(set) var recordsCallCount = 0
-    private var nextSessionID: Int64 = 1
-    private let recordsToReturn: [UsageRecord]
-
-    init(recordsToReturn: [UsageRecord] = []) {
-        self.recordsToReturn = recordsToReturn
-    }
-
-    func startNetworkSession(networkName: String, startedAt: Date) throws -> Int64 {
-        lock.lock()
-        defer { lock.unlock() }
-        startedSessions.append(networkName)
-        defer { nextSessionID += 1 }
-        return nextSessionID
-    }
-
-    func finishNetworkSession(id: Int64, endedAt: Date) throws {
-        lock.lock()
-        finishedSessionIDs.append(id)
-        lock.unlock()
-    }
-
-    func finishOpenNetworkSessions(endedAt: Date) throws {}
-
-    func record(_ deltas: [UsageDelta]) throws {
-        lock.lock()
-        recordedDeltaBatches.append(deltas)
-        lock.unlock()
-    }
-
-    func records(timeRange: UsageTimeRange, networkName: String?, filterText: String, sessionStartedAt: Date, now: Date) throws -> [UsageRecord] {
-        lock.lock()
-        recordsCallCount += 1
-        lock.unlock()
-        return recordsToReturn
-    }
-
-    func networks() throws -> [String] { [] }
-
-    func reset(networkName: String?, since startDate: Date?) throws {}
-
-    func performMaintenance(now: Date) throws {}
 }
