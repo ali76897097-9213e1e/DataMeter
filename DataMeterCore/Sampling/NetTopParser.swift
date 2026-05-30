@@ -11,9 +11,10 @@ public enum NetTopParser {
             return []
         }
 
-        return rows.dropFirst().compactMap { row in
+        let snapshots = rows.dropFirst().compactMap { row in
             parseRow(row, processIndex: processIndex, downloadedIndex: downloadedIndex, uploadedIndex: uploadedIndex)
         }
+        return coalescedSnapshots(snapshots)
     }
 
     private static func parseRow(_ row: String, processIndex: Int, downloadedIndex: Int, uploadedIndex: Int) -> ProcessSnapshot? {
@@ -77,6 +78,30 @@ public enum NetTopParser {
 
         fields.append(current)
         return fields
+    }
+
+    private static func coalescedSnapshots(_ snapshots: [ProcessSnapshot]) -> [ProcessSnapshot] {
+        var snapshotsByKey: [String: ProcessSnapshot] = [:]
+        var orderedKeys: [String] = []
+
+        for snapshot in snapshots {
+            if let existing = snapshotsByKey[snapshot.key] {
+                snapshotsByKey[snapshot.key] = ProcessSnapshot(
+                    key: snapshot.key,
+                    processName: snapshot.processName,
+                    appIdentifier: snapshot.appIdentifier,
+                    appName: snapshot.appName,
+                    pid: snapshot.pid,
+                    downloaded: max(existing.downloaded, snapshot.downloaded),
+                    uploaded: max(existing.uploaded, snapshot.uploaded)
+                )
+            } else {
+                orderedKeys.append(snapshot.key)
+                snapshotsByKey[snapshot.key] = snapshot
+            }
+        }
+
+        return orderedKeys.compactMap { snapshotsByKey[$0] }
     }
 
     public static func parseProcessIdentity(_ processKey: String) -> (name: String, pid: Int32?) {

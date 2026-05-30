@@ -11,6 +11,7 @@ struct SettingsView: View {
         Form {
             Section("Tracking") {
                 Toggle("Launch at login", isOn: $launchAtLogin)
+                    .accessibilityHint("Starts DataMeter automatically when you log in")
                     .onChange(of: launchAtLogin) { _, newValue in
                         updateLaunchAtLogin(newValue)
                     }
@@ -26,6 +27,7 @@ struct SettingsView: View {
 
             Section("Appearance") {
                 Toggle("Show Dock icon", isOn: $appearanceSettings.showDockIcon)
+                    .accessibilityHint("Shows or hides DataMeter in the Dock")
                 Text("Turn this off to keep DataMeter as a quiet menu bar utility.")
                     .font(.callout)
                     .foregroundStyle(.secondary)

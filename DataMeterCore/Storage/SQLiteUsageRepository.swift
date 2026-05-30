@@ -15,6 +15,8 @@ public final class SQLiteUsageRepository: UsageHistoryRepository, @unchecked Sen
             databaseURL = directory.appendingPathComponent("usage.sqlite")
         }
 
+        try Self.resetIncompatiblePreReleaseDatabaseIfNeeded(at: databaseURL)
+
         var configuration = Configuration()
         configuration.prepareDatabase { db in
             try db.execute(sql: "PRAGMA journal_mode = WAL")
@@ -23,6 +25,38 @@ public final class SQLiteUsageRepository: UsageHistoryRepository, @unchecked Sen
         dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: configuration)
         try Self.migrator.migrate(dbQueue)
         DataMeterLog.storage.debug("opened usage database at \(databaseURL.path, privacy: .private)")
+    }
+
+    private static func resetIncompatiblePreReleaseDatabaseIfNeeded(at databaseURL: URL) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: databaseURL.path) else { return }
+
+        let needsReset: Bool = try {
+            let existingQueue = try DatabaseQueue(path: databaseURL.path)
+            return try existingQueue.read { db in
+                guard try db.tableExists("usage_daily_rollups") else { return false }
+                let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(usage_daily_rollups)")
+                let primaryKeyColumns = rows.compactMap { row -> (name: String, position: Int)? in
+                    let position: Int = row["pk"]
+                    guard position > 0 else { return nil }
+                    let name: String = row["name"]
+                    return (name, position)
+                }
+                .sorted { $0.position < $1.position }
+                .map(\.name)
+
+                return primaryKeyColumns != ["day_start", "app_identifier", "network_name"]
+            }
+        }()
+
+        guard needsReset else { return }
+        DataMeterLog.storage.debug("resetting incompatible pre-release usage database")
+        for suffix in ["", "-wal", "-shm"] {
+            let url = URL(fileURLWithPath: databaseURL.path + suffix)
+            if fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
+            }
+        }
     }
 
     public func startNetworkSession(networkName: String, startedAt: Date) throws -> Int64 {
@@ -103,10 +137,10 @@ public final class SQLiteUsageRepository: UsageHistoryRepository, @unchecked Sen
                 UNION ALL
                 SELECT app_identifier, app_name, network_name, day_start AS timestamp, downloaded_bytes, uploaded_bytes FROM usage_daily_rollups
             )
-            SELECT app_identifier, app_name, SUM(downloaded_bytes) AS downloaded, SUM(uploaded_bytes) AS uploaded
+            SELECT app_identifier, MAX(app_name) AS app_name, SUM(downloaded_bytes) AS downloaded, SUM(uploaded_bytes) AS uploaded
             FROM usage
             \(whereClause)
-            GROUP BY app_identifier, app_name
+            GROUP BY app_identifier
             HAVING downloaded > 0 OR uploaded > 0
             ORDER BY downloaded + uploaded DESC, app_name ASC
             """
@@ -168,14 +202,14 @@ public final class SQLiteUsageRepository: UsageHistoryRepository, @unchecked Sen
                 INSERT INTO usage_daily_rollups (day_start, app_identifier, app_name, network_name, downloaded_bytes, uploaded_bytes)
                 SELECT CAST(timestamp / 86400 AS INTEGER) * 86400 AS day_start,
                        app_identifier,
-                       app_name,
+                       MAX(app_name) AS app_name,
                        network_name,
                        SUM(downloaded_bytes),
                        SUM(uploaded_bytes)
                 FROM usage_deltas
                 WHERE timestamp < ?
-                GROUP BY day_start, app_identifier, app_name, network_name
-                ON CONFLICT(day_start, app_identifier, app_name, network_name) DO UPDATE SET
+                GROUP BY day_start, app_identifier, network_name
+                ON CONFLICT(day_start, app_identifier, network_name) DO UPDATE SET
                     downloaded_bytes = downloaded_bytes + excluded.downloaded_bytes,
                     uploaded_bytes = uploaded_bytes + excluded.uploaded_bytes
                 """,
@@ -222,7 +256,7 @@ public final class SQLiteUsageRepository: UsageHistoryRepository, @unchecked Sen
                 table.column("network_name", .text).notNull()
                 table.column("downloaded_bytes", .integer).notNull()
                 table.column("uploaded_bytes", .integer).notNull()
-                table.primaryKey(["day_start", "app_identifier", "app_name", "network_name"], onConflict: .replace)
+                table.primaryKey(["day_start", "app_identifier", "network_name"], onConflict: .replace)
             }
             try db.create(index: "idx_usage_daily_rollups_day_network_app", on: "usage_daily_rollups", columns: ["day_start", "network_name", "app_identifier"])
             try db.create(index: "idx_usage_daily_rollups_network_day_app", on: "usage_daily_rollups", columns: ["network_name", "day_start", "app_identifier"])

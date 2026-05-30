@@ -77,6 +77,29 @@ final class UsageTrackingEngineTests: XCTestCase {
         XCTAssertEqual(state.totalUploaded, 0)
     }
 
+    func testPauseDoesNotRecordTrafficThatHappenedWhilePaused() async throws {
+        let sampler = SequenceSampler(samples: [
+            [ProcessSnapshot(key: "curl.42", appName: "curl", pid: 42, downloaded: 100, uploaded: 50)],
+            [ProcessSnapshot(key: "curl.42", appName: "curl", pid: 42, downloaded: 300, uploaded: 150)],
+            [ProcessSnapshot(key: "curl.42", appName: "curl", pid: 42, downloaded: 360, uploaded: 180)]
+        ])
+        let repository = try SQLiteUsageRepository(url: temporaryDatabaseURL())
+        let engine = UsageTrackingEngine(
+            sampler: sampler,
+            repository: repository,
+            networkProvider: SequenceNetworkProvider(networks: ["Wi‑Fi", "Wi‑Fi", "Wi‑Fi"])
+        )
+        let query = UsageQuery(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: Date(timeIntervalSince1970: 0))
+
+        _ = try await engine.sample(query: query)
+        try await engine.pause()
+        _ = try await engine.sample(query: query)
+        let state = try await engine.sample(query: query)
+
+        XCTAssertEqual(state.records.first?.downloaded, 60)
+        XCTAssertEqual(state.records.first?.uploaded, 30)
+    }
+
     private func temporaryDatabaseURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

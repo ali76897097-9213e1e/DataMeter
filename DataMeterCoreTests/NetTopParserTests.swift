@@ -45,4 +45,18 @@ time,,interface,state,bytes_in,bytes_out
 
         XCTAssertEqual(snapshots.map(\.appName), ["Google Chrome", "WebKit"])
     }
+
+    func testDuplicateProcessRowsAreCoalescedDefensively() {
+        let output = """
+time,,interface,state,bytes_in,bytes_out
+02:20:48.1,node.99,,,100,20
+02:20:48.1,node.99,,,80,30
+"""
+
+        let snapshots = NetTopParser.parse(output)
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshots[0].downloaded, 100)
+        XCTAssertEqual(snapshots[0].uploaded, 30)
+    }
 }

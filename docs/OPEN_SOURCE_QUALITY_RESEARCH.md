@@ -81,37 +81,7 @@ Apple's Power Profiler template is not available for macOS targets in the instal
 
 These are the remaining meaningful items before a first public release. They are not open-source ceremony; they directly affect product quality.
 
-### 1. Accessibility pass
-
-Add explicit accessibility labels/values for:
-
-- total usage summary,
-- download/upload values,
-- tracking status,
-- table rows and app icons,
-- menu bar summary.
-
-Goal: VoiceOver should describe the dashboard usefully and not read decorative icons as meaningless images.
-
-### 2. Low Power Mode / battery-aware sampling
-
-Current sampling is visibility-aware. If macOS exposes a reliable low-power/battery state for the deployment target, slow sampling further while on battery/low-power.
-
-Goal: avoid becoming a background energy nuisance on portable Macs.
-
-### 3. Long-run soak check
-
-Run a longer local soak, ideally 1–4 hours, then inspect:
-
-- database size,
-- row counts,
-- average CPU,
-- memory growth,
-- sample failure logs.
-
-Goal: catch leaks, runaway DB growth, or repeated `nettop` failures.
-
-### 4. Optional UI polish from real use
+### 1. Optional UI polish from real use
 
 Only after the architecture is stable:
 
@@ -133,6 +103,7 @@ Before first public release, require:
 
 - all current checks passing,
 - accessibility pass complete,
+- battery/low-power-aware sampling complete,
 - no known correctness issue that can pollute usage totals,
 - local data reset once more after final schema decision,
 - README/PRIVACY accurately matching behavior,

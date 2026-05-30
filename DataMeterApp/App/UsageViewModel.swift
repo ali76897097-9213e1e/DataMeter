@@ -1,6 +1,7 @@
 import AppKit
 import DataMeterCore
 import Foundation
+import IOKit.ps
 
 @MainActor
 final class UsageViewModel: ObservableObject {
@@ -26,7 +27,10 @@ final class UsageViewModel: ObservableObject {
     private let sessionStartedAt = Date()
     private let activeSampleInterval: Duration = .seconds(2)
     private let backgroundSampleInterval: Duration = .seconds(8)
+    private let energyConstrainedActiveSampleInterval: Duration = .seconds(5)
+    private let energyConstrainedBackgroundSampleInterval: Duration = .seconds(15)
     private var visibleSurfaceCount = 0
+    private var queryGeneration = 0
 
     init(
         sampler: UsageSampler = NetTopSampler(),
@@ -80,20 +84,28 @@ final class UsageViewModel: ObservableObject {
     }
 
     func resetVisibleTotals() {
+        queryGeneration += 1
+        let generation = queryGeneration
+        let query = makeQuery()
         Task {
             do {
                 guard let engine else { return }
-                let state = try await engine.reset(query: makeQuery())
+                let state = try await engine.reset(query: query)
+                guard generation == queryGeneration else { return }
                 apply(state: state)
                 status = isRunning ? "Tracking" : "Paused"
             } catch {
+                guard generation == queryGeneration else { return }
                 status = "Reset failed: \(error.localizedDescription)"
             }
         }
     }
 
     func filtersChanged() {
-        Task { await refreshState() }
+        queryGeneration += 1
+        let generation = queryGeneration
+        let query = makeQuery()
+        Task { await refreshState(query: query, generation: generation) }
     }
 
     func surfaceAppeared() {
@@ -106,15 +118,19 @@ final class UsageViewModel: ObservableObject {
 
     func sample() async {
         guard isRunning else { return }
+        let generation = queryGeneration
+        let query = makeQuery()
         do {
             guard let engine else { return }
-            let state = try await engine.sample(query: makeQuery())
-            guard isRunning, !Task.isCancelled else { return }
+            let state = try await engine.sample(query: query)
+            guard isRunning, !Task.isCancelled, generation == queryGeneration else { return }
             apply(state: state)
             status = "Tracking • \(state.processCount) processes"
         } catch is CancellationError {
+            guard generation == queryGeneration else { return }
             status = "Paused"
         } catch {
+            guard generation == queryGeneration else { return }
             status = "Tracking failed: \(error.localizedDescription)"
         }
     }
@@ -135,15 +151,40 @@ final class UsageViewModel: ObservableObject {
     }
 
     private var nextSampleInterval: Duration {
-        visibleSurfaceCount > 0 ? activeSampleInterval : backgroundSampleInterval
+        if isEnergyConstrained {
+            return visibleSurfaceCount > 0 ? energyConstrainedActiveSampleInterval : energyConstrainedBackgroundSampleInterval
+        }
+        return visibleSurfaceCount > 0 ? activeSampleInterval : backgroundSampleInterval
+    }
+
+    private var isEnergyConstrained: Bool {
+        ProcessInfo.processInfo.isLowPowerModeEnabled || isRunningOnBatteryPower
+    }
+
+    private var isRunningOnBatteryPower: Bool {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return false }
+
+        for source in sources {
+            guard let description = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue() as? [String: Any],
+                  let state = description[kIOPSPowerSourceStateKey] as? String else { continue }
+            if state == kIOPSBatteryPowerValue { return true }
+        }
+        return false
     }
 
     private func refreshState() async {
+        await refreshState(query: makeQuery(), generation: queryGeneration)
+    }
+
+    private func refreshState(query: UsageQuery, generation: Int) async {
         do {
             guard let engine else { return }
-            let state = try await engine.state(query: makeQuery())
+            let state = try await engine.state(query: query)
+            guard generation == queryGeneration else { return }
             apply(state: state)
         } catch {
+            guard generation == queryGeneration else { return }
             status = "Query failed: \(error.localizedDescription)"
         }
     }

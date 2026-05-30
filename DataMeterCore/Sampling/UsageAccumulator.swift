@@ -30,7 +30,9 @@ public struct UsageAccumulator: Sendable {
             ))
         }
 
-        previousSnapshots = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.key, $0) })
+        previousSnapshots = snapshots.reduce(into: [:]) { result, snapshot in
+            result[snapshot.key] = snapshot
+        }
         return deltas
     }
 

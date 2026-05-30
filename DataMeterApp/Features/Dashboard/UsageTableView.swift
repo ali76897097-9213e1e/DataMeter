@@ -9,9 +9,10 @@ struct UsageTableView: View {
         Table(records, sortOrder: $sortOrder) {
             TableColumn("App", value: \UsageRecord.appName) { record in
                 HStack(spacing: 8) {
-                    Image(nsImage: AppIconCache.shared.icon(for: record.appName))
+                    Image(nsImage: AppIconCache.shared.icon(for: record))
                         .resizable()
                         .frame(width: 16, height: 16)
+                        .accessibilityHidden(true)
                     Text(record.appName)
                 }
             }
@@ -22,5 +23,6 @@ struct UsageTableView: View {
             TableColumn("Total") { Text(formatBytes($0.total)).bold() }
                 .width(120)
         }
+        .accessibilityLabel("App network usage")
     }
 }

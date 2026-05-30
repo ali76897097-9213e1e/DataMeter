@@ -33,16 +33,21 @@ struct DashboardView: View {
                 Text(formatBytes(viewModel.totalUsage))
                     .font(.system(size: 32, weight: .semibold, design: .rounded))
                     .monospacedDigit()
+                    .accessibilityLabel("Total usage")
+                    .accessibilityValue(formatBytes(viewModel.totalUsage))
                 Text("↓ \(formatBytes(viewModel.totalDownloaded))   ↑ \(formatBytes(viewModel.totalUploaded))")
                     .font(.headline)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                    .accessibilityLabel("Downloaded \(formatBytes(viewModel.totalDownloaded)), uploaded \(formatBytes(viewModel.totalUploaded))")
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 6) {
-                Label("Tracking", systemImage: "circle.fill")
+                Label(statusTitle, systemImage: "circle.fill")
                     .font(.caption.bold())
-                    .foregroundStyle(.green)
+                    .foregroundStyle(statusColor)
+                    .accessibilityLabel("Tracking status")
+                    .accessibilityValue(viewModel.status)
                 Text("Since \(viewModel.trackingStartedAt, style: .time)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -50,9 +55,24 @@ struct DashboardView: View {
         }
     }
 
+    private var statusTitle: String {
+        if viewModel.status.localizedCaseInsensitiveContains("failed") || viewModel.status.localizedCaseInsensitiveContains("unavailable") {
+            return "Needs attention"
+        }
+        return viewModel.isRunning ? "Tracking" : "Paused"
+    }
+
+    private var statusColor: Color {
+        if viewModel.status.localizedCaseInsensitiveContains("failed") || viewModel.status.localizedCaseInsensitiveContains("unavailable") {
+            return .red
+        }
+        return viewModel.isRunning ? .green : .secondary
+    }
+
     private var filters: some View {
         HStack(spacing: 10) {
             TextField("Filter apps", text: $viewModel.filterText)
+                .accessibilityLabel("Filter apps")
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: viewModel.filterText) { _, _ in viewModel.filtersChanged() }
             Picker("Range", selection: $viewModel.selectedTimeRange) {

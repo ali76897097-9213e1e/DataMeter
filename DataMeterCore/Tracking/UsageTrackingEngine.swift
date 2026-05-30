@@ -120,6 +120,7 @@ public actor UsageTrackingEngine {
     }
 
     public func pause() throws {
+        defer { accumulator.reset() }
         guard let currentNetworkSessionID else { return }
         try repository.finishNetworkSession(id: currentNetworkSessionID, endedAt: Date())
         self.currentNetworkSessionID = nil

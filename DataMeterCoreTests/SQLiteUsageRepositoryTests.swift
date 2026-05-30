@@ -1,3 +1,4 @@
+import GRDB
 import XCTest
 @testable import DataMeterCore
 
@@ -26,6 +27,23 @@ final class SQLiteUsageRepositoryTests: XCTestCase {
         let allTimeMobile = try repository.records(timeRange: .allTime, networkName: "Mobile", filterText: "", sessionStartedAt: sessionStart, now: now)
         XCTAssertEqual(allTimeMobile[0].downloaded, 3_000)
         XCTAssertEqual(allTimeMobile[0].uploaded, 300)
+    }
+
+    func testRecordsWithSameStableIdentifierAreReturnedAsOneVisibleApp() throws {
+        let repository = try SQLiteUsageRepository(url: temporaryDatabaseURL())
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        try repository.record([
+            UsageDelta(appIdentifier: "com.apple.Safari", appName: "Safari", networkName: "Wi‑Fi", timestamp: now, downloaded: 1_000, uploaded: 100),
+            UsageDelta(appIdentifier: "com.apple.Safari", appName: "Safari Networking", networkName: "Wi‑Fi", timestamp: now, downloaded: 2_000, uploaded: 200)
+        ])
+
+        let records = try repository.records(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: now, now: now)
+
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].id, "com.apple.Safari")
+        XCTAssertEqual(records[0].downloaded, 3_000)
+        XCTAssertEqual(records[0].uploaded, 300)
     }
 
     func testNetworkSessionsCanBeStartedAndFinished() throws {
@@ -70,6 +88,34 @@ final class SQLiteUsageRepositoryTests: XCTestCase {
         XCTAssertEqual(officeRecords.count, 1)
         XCTAssertEqual(officeRecords[0].appName, "Safari")
         XCTAssertEqual(try repository.networks(), ["Mobile", "Office"])
+    }
+
+    func testOpeningOldPreReleaseRollupSchemaResetsDatabase() throws {
+        let oldSchemaURL = temporaryDatabaseURL()
+        try {
+            let oldSchema = try GRDB.DatabaseQueue(path: oldSchemaURL.path)
+            try oldSchema.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE usage_daily_rollups (
+                        day_start DOUBLE NOT NULL,
+                        app_identifier TEXT NOT NULL,
+                        app_name TEXT NOT NULL,
+                        network_name TEXT NOT NULL,
+                        downloaded_bytes INTEGER NOT NULL,
+                        uploaded_bytes INTEGER NOT NULL,
+                        PRIMARY KEY (day_start, app_identifier, app_name, network_name)
+                    )
+                    """)
+            }
+        }()
+
+        let resetRepository = try SQLiteUsageRepository(url: oldSchemaURL)
+        try resetRepository.record([
+            UsageDelta(appIdentifier: "com.example.New", appName: "New", networkName: "Wi‑Fi", timestamp: Date(timeIntervalSince1970: 0), downloaded: 2, uploaded: 0)
+        ])
+
+        let records = try resetRepository.records(timeRange: .allTime, networkName: nil, filterText: "", sessionStartedAt: Date(timeIntervalSince1970: 0), now: Date())
+        XCTAssertEqual(records.map(\.appIdentifier), ["com.example.New"])
     }
 
     func testResetDeletesOnlyMatchingScope() throws {

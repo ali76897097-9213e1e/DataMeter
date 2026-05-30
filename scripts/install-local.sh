@@ -16,4 +16,4 @@ ditto "$BUILD_APP" "$INSTALL_APP"
 open -n "$INSTALL_APP"
 
 echo "Installed and launched $INSTALL_APP"
-echo "Launch at Login is enabled by the app on launch. If macOS asks for confirmation, allow DataMeter in System Settings → Login Items."
+echo "Enable Launch at Login in DataMeter Settings if you want it to start automatically."
